@@ -1,7 +1,6 @@
+use crate::config::*;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
-const DATA_SHARDS: usize = 10;
-const PARITY_SHARDS: usize = 4;
 const MAX_PACKET_PAYLOAD_SIZE: usize = 1480; // Maximum payload size
 const PACKET_PAYLOAD_SIZE: usize = MAX_PACKET_PAYLOAD_SIZE - 3;
 
@@ -30,18 +29,18 @@ pub fn process_frame_into_chunks(
         encoded_chunks.push(framed_chunk);
     }
 
-    println!(
+    log::info!(
         "[*] Frame {} processed into {} chunks ({} bytes each)",
         frame_id,
         encoded_chunks.len(),
-        (DATA_SHARDS + PARITY_SHARDS) * PACKET_PAYLOAD_SIZE
+        CHUNK_SHARDS * PACKET_PAYLOAD_SIZE
     );
 
     Ok(encoded_chunks)
 }
 
 pub fn encode_chunk(data: &[u8]) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
-    let mut shards = vec![vec![0u8; PACKET_PAYLOAD_SIZE]; DATA_SHARDS + PARITY_SHARDS];
+    let mut shards = vec![vec![0u8; PACKET_PAYLOAD_SIZE]; CHUNK_SHARDS];
 
     for i in 0..DATA_SHARDS {
         let start = i * PACKET_PAYLOAD_SIZE;
@@ -61,9 +60,9 @@ pub fn encode_chunk(data: &[u8]) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Err
     Ok(shards)
 }
 
-pub fn decode_chunk(shards: &mut [Option<Vec<u8>>]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn decode_chunk(chunk: &mut [Option<Vec<u8>>]) -> Result<(), Box<dyn std::error::Error>> {
     let r = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
-    r.reconstruct(shards).unwrap();
+    r.reconstruct(chunk)?;
 
     Ok(())
 }

@@ -1,3 +1,4 @@
+mod config;
 mod data_prepare;
 mod network_send;
 mod video_process;
@@ -6,6 +7,8 @@ use crate::network_send::{close_socket, open_socket};
 use crate::video_process::{receive_video_stream, transmit_video_stream};
 
 use clap::{Parser, ValueEnum};
+
+use env_logger::{Builder, Env};
 
 #[derive(Parser, Debug)]
 #[command(name = "drone-vtx")]
@@ -29,17 +32,19 @@ enum Mode {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Builder::from_env(Env::default().default_filter_or("info")).init();
+
     let cli = Cli::parse();
 
-    println!("=== DIY Drone VTX Starting ===");
+    log::info!("=== DIY Drone VTX Starting ===");
 
     match cli.mode {
         Mode::Tx => {
-            println!("[*] Running in TRANSMITTER (Air Unit) mode");
+            log::info!("[*] Running in TRANSMITTER (Air Unit) mode");
             run_transmitter(&cli.interface)?;
         }
         Mode::Rx => {
-            println!("[*] Running in RECEIVER (Ground Station) mode");
+            log::info!("[*] Running in RECEIVER (Ground Station) mode");
             run_receiver(&cli.interface)?;
         }
     }

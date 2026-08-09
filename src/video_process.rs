@@ -1,4 +1,5 @@
-use crate::data_prepare::process_frame_into_chunks;
+use crate::config::*;
+use crate::data_prepare::{decode_chunk, process_frame_into_chunks};
 use crate::network_send::send_frame;
 use std::io::Error;
 use v4l::{
@@ -19,15 +20,17 @@ pub fn transmit_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::E
     fmt.fourcc = FourCC::new(b"MJPG");
 
     let set_fmt = dev.set_format(&fmt)?;
-    println!(
+    log::info!(
         "[*] Camera initialized: {}x{} ({})",
-        set_fmt.width, set_fmt.height, set_fmt.fourcc
+        set_fmt.width,
+        set_fmt.height,
+        set_fmt.fourcc
     );
 
     // 3. Allocate video streaming buffers in memory
     let mut stream = Stream::with_buffers(&dev, Type::VideoCapture, 4)?;
 
-    println!("[*] Starting video loop...");
+    log::info!("[*] Starting video loop...");
 
     transmit_video_frame(&mut stream, socket_fd)?;
 
@@ -39,7 +42,7 @@ fn transmit_video_frame(
     socket_fd: i32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (buf, _meta) = stream.next()?;
-    println!("[+] Captured Frame: Size = {} bytes", buf.len());
+    log::debug!("[+] Captured Frame: Size = {} bytes", buf.len());
 
     let encoded_chunks = process_frame_into_chunks(0, &buf)?; // Replace 0 with actual frame ID if available
 
@@ -53,7 +56,8 @@ fn transmit_video_frame(
 }
 
 pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Error>> {
-    let frames: Vec<Vec<Vec<u8>>> = Vec::new();
+    let mut last_chunk_id: i32 = -1;
+    let mut chunk: [Option<Vec<u8>>; CHUNK_SHARDS] = Default::default();
 
     let mut buf = [0u8; 2048];
 
@@ -75,16 +79,12 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
 
         let packet = &buf[..bytes_received as usize];
 
-        if packet.len() < 35 {
-            continue;
-        }
-
         // --- Basic 802.11 Frame Parsing ---
         // 1. Radiotap header length is stored at byte offset 2 (u16 little endian)
         let radiotap_len = u16::from_le_bytes([packet[2], packet[3]]) as usize;
 
         if packet.len() < radiotap_len + 24 {
-            continue; // Truncated header
+            continue;
         }
 
         // 2. The 802.11 header starts right after the Radiotap header
@@ -92,12 +92,14 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
 
         // Frame Control bytes
         let frame_control = u16::from_le_bytes([dot11_header[0], dot11_header[1]]);
+
         let frame_type = (frame_control >> 2) & 0x3; // Bit 2-3
         let frame_subtype = (frame_control >> 4) & 0xF; // Bit 4-7
 
         // Extract Destination and Source MAC Addresses
-        let dst_mac = &dot11_header[4..10];
+        let _dst_mac = &dot11_header[4..10];
         let src_mac = &dot11_header[10..16];
+        let _bssid_mac = &dot11_header[16..22];
 
         // Extract Sequence Control (Bits 4-15 = Sequence Number)
         let seq_ctrl = u16::from_le_bytes([dot11_header[22], dot11_header[23]]);
@@ -106,10 +108,11 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
         if src_mac != [0x00, 0x11, 0x22, 0x33, 0x44, 0x55] {
             continue; // Ignore frames from other sources
         }
+
         let payload = &dot11_header[24..];
 
         // Print parsed frame summary
-        println!(
+        log::debug!(
             "[{} bytes] Type: {} Subtype: {:2} | Src: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} | Seq: {}",
             bytes_received,
             match frame_type {
@@ -128,13 +131,35 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
             seq_num
         );
 
-        println!(
-            "Frame ID: {}, Chunk ID: {}, Shard ID: {}",
-            payload[0], payload[1], payload[2]
-        );
-    }
-}
+        let frame_id = payload[0] as u32;
+        let chunk_id = payload[1] as usize;
+        let shard_id = payload[2] as usize;
 
-fn receive_video_frame(socket_fd: i32) -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
+        log::debug!(
+            "Frame ID: {}, Chunk ID: {}, Shard ID: {}",
+            frame_id,
+            chunk_id,
+            shard_id
+        );
+
+        if chunk_id != last_chunk_id as usize {
+            if last_chunk_id != -1 {
+                // New chunk received
+                let result = decode_chunk(&mut chunk);
+
+                if let Err(e) = result {
+                    log::error!("Error decoding chunk: {}", e);
+                }
+
+                // Reset the chunk vector
+                for shard in chunk.iter_mut() {
+                    *shard = None;
+                }
+            }
+
+            last_chunk_id = chunk_id as i32;
+        } else {
+            chunk[shard_id] = Some(payload[3..(payload.len() - 4)].to_vec());
+        }
+    }
 }
