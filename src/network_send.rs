@@ -63,22 +63,18 @@ pub fn send_frame(socket_fd: i32, frame_bytes: Vec<u8>) -> Result<(), Box<dyn st
 }
 
 pub fn build_action_frame(payload: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(35 + payload.len());
+    let mut buf = Vec::with_capacity(8 + 24 + payload.len());
 
     // 1. Radiotap Header (8 Bytes)
     buf.extend_from_slice(&[0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
     // 2. 802.11 Action Frame Header (24 Bytes)
-    // Frame Control: Subtype Action (0xD0 -> Little Endian [0xd0, 0x00])
-    buf.extend_from_slice(&[0xd0, 0x00]);
+    buf.extend_from_slice(&[0xd0, 0x00]); // Frame Control: Subtype Action
     buf.extend_from_slice(&[0x00, 0x00]); // Duration
     buf.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // Dest MAC
     buf.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]); // Src MAC
     buf.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // BSSID
-
-    // 3. Action Frame Payload Header (3 Bytes)
-    buf.push(127); // Category: Vendor-specific / Experimental (127)
-    buf.extend_from_slice(&[0x00, 0x00, 0x00]); // OUI / ID
+    buf.extend_from_slice(&[0x00, 0x00]); // Sequence Control - Gets overwritten by the Wi-Fi driver
 
     // 4. Raw Contiguous Payload (Up to ~1400 bytes)
     buf.extend_from_slice(payload);
