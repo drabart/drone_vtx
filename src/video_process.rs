@@ -149,6 +149,12 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
 
                 if let Err(e) = result {
                     log::error!("Error decoding chunk: {}", e);
+                    log::info!(
+                        "Chunk has {} shards, expected {} (minimum {})",
+                        chunk.iter().filter(|s| s.is_some()).count(),
+                        CHUNK_SHARDS,
+                        DATA_SHARDS
+                    );
                 }
 
                 // Reset the chunk vector
