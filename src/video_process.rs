@@ -49,6 +49,7 @@ fn transmit_video_frame(
     for chunk in encoded_chunks {
         for shard in chunk {
             send_frame(socket_fd, shard)?;
+            std::thread::sleep(std::time::Duration::from_micros(50));
         }
     }
 

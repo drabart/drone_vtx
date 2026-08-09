@@ -3,20 +3,51 @@ use std::ffi::CString;
 use std::mem::zeroed;
 
 pub fn open_socket(interface: &str) -> Result<i32, Box<dyn std::error::Error>> {
-    // 1. Create a raw socket (AF_PACKET)
+    // 1. Create raw socket
     let socket_fd = unsafe { socket(AF_PACKET, SOCK_RAW, (ETH_P_ALL as u16).to_be() as i32) };
     if socket_fd < 0 {
         return Err("Failed to create raw socket. Are you running as root/sudo?".into());
     }
 
-    // 2. Resolve interface index for wlan1
+    // 2. Bypass Linux Qdisc for direct low-latency injection
+    let bypass: libc::c_int = 1;
+    unsafe {
+        libc::setsockopt(
+            socket_fd,
+            libc::SOL_PACKET,
+            libc::PACKET_QDISC_BYPASS,
+            &bypass as *const _ as *const libc::c_void,
+            std::mem::size_of_val(&bypass) as libc::socklen_t,
+        );
+    }
+
+    // 3. Set Socket Buffers to 4MB to prevent drops during bursts
+    let buf_size: libc::c_int = 4 * 1024 * 1024;
+    unsafe {
+        libc::setsockopt(
+            socket_fd,
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            &buf_size as *const _ as *const libc::c_void,
+            std::mem::size_of_val(&buf_size) as libc::socklen_t,
+        );
+        libc::setsockopt(
+            socket_fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &buf_size as *const _ as *const libc::c_void,
+            std::mem::size_of_val(&buf_size) as libc::socklen_t,
+        );
+    }
+
+    // 4. Resolve interface index
     let iface_name = CString::new(interface)?;
     let if_index = unsafe { libc::if_nametoindex(iface_name.as_ptr()) };
     if if_index == 0 {
         return Err(format!("Interface {} not found", interface).into());
     }
 
-    // 3. Bind socket to the monitor mode interface
+    // 5. Bind socket
     let mut sa: sockaddr_ll = unsafe { zeroed() };
     sa.sll_family = AF_PACKET as u16;
     sa.sll_protocol = (ETH_P_ALL as u16).to_be();
