@@ -1,7 +1,9 @@
 use crate::config::*;
 use crate::data_prepare::{decode_chunk, process_frame_into_chunks};
 use crate::network_send::send_frame;
-use std::io::Error;
+use std::io::{Error, Result as IoResult};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread::{self, JoinHandle};
 use v4l::{
     buffer::Type,
     device::Device,
@@ -10,163 +12,278 @@ use v4l::{
     video::Capture,
 };
 
-pub fn transmit_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Error>> {
-    let dev = Device::new(0)?;
+// ============================================================================
+// 1. CHUNK ASSEMBLER STATE MACHINE
+// ============================================================================
 
-    // 2. Query and set camera format
-    let mut fmt = dev.format()?;
-    fmt.width = 640;
-    fmt.height = 480;
-    fmt.fourcc = FourCC::new(b"MJPG");
-
-    let set_fmt = dev.set_format(&fmt)?;
-    log::info!(
-        "[*] Camera initialized: {}x{} ({})",
-        set_fmt.width,
-        set_fmt.height,
-        set_fmt.fourcc
-    );
-
-    // 3. Allocate video streaming buffers in memory
-    let mut stream = Stream::with_buffers(&dev, Type::VideoCapture, 4)?;
-
-    log::info!("[*] Starting video loop...");
-
-    transmit_video_frame(&mut stream, socket_fd)?;
-
-    Ok(())
+pub struct ChunkAssembler {
+    last_frame_id: i32,
+    last_chunk_id: i32,
+    chunks_ok: i32,
+    current_chunk: [Option<Vec<u8>>; CHUNK_SHARDS],
 }
 
-fn transmit_video_frame(
-    stream: &mut Stream,
-    socket_fd: i32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (buf, _meta) = stream.next()?;
-    log::debug!("[+] Captured Frame: Size = {} bytes", buf.len());
+impl Default for ChunkAssembler {
+    fn default() -> Self {
+        Self {
+            last_frame_id: -1,
+            last_chunk_id: -1,
+            chunks_ok: 0,
+            current_chunk: Default::default(),
+        }
+    }
+}
 
-    let encoded_chunks = process_frame_into_chunks(0, &buf)?; // Replace 0 with actual frame ID if available
+impl ChunkAssembler {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    for chunk in encoded_chunks {
-        for shard in chunk {
-            send_frame(socket_fd, shard)?;
-            std::thread::sleep(std::time::Duration::from_micros(50));
+    pub fn process_shard(&mut self, payload: &[u8]) {
+        // Minimum payload size: Command (1) + FrameID (1) + ChunkID (1) + ShardID (1) + FCS (4)
+        if payload.len() < 8 {
+            return;
+        }
+
+        let frame_id = payload[1] as u32;
+        let chunk_id = payload[2] as usize;
+        let shard_id = payload[3] as usize;
+
+        if shard_id >= CHUNK_SHARDS {
+            log::warn!("Received invalid shard_id: {}", shard_id);
+            return;
+        }
+
+        // Frame transition: flush pending chunk & log stats
+        if frame_id != self.last_frame_id as u32 {
+            if self.last_frame_id != -1 {
+                if self.last_chunk_id != -1 {
+                    self.flush_and_decode_chunk();
+                }
+
+                log::info!(
+                    "[*] Frame {} completed. Total chunks decoded: {}/{}",
+                    self.last_frame_id,
+                    self.chunks_ok,
+                    if self.last_chunk_id >= 0 {
+                        self.last_chunk_id + 1
+                    } else {
+                        0
+                    }
+                );
+            }
+
+            self.chunks_ok = 0;
+            self.last_frame_id = frame_id as i32;
+            self.last_chunk_id = -1;
+        }
+
+        // Chunk transition: flush completed chunk
+        if chunk_id != self.last_chunk_id as usize {
+            if self.last_chunk_id != -1 {
+                self.flush_and_decode_chunk();
+            }
+            self.last_chunk_id = chunk_id as i32;
+        }
+
+        // Store shard payload (strip 4-byte header and 4-byte trailing FCS)
+        let end_idx = payload.len() - 4;
+        if end_idx >= 4 {
+            self.current_chunk[shard_id] = Some(payload[4..end_idx].to_vec());
         }
     }
 
-    Ok(())
+    fn flush_and_decode_chunk(&mut self) {
+        match decode_chunk(&mut self.current_chunk) {
+            Ok(_) => {
+                self.chunks_ok += 1;
+            }
+            Err(err) => {
+                log::debug!("Error decoding chunk: {:?}", err);
+                log::error!(
+                    "Chunk has {} shards, expected {} (min {})",
+                    self.current_chunk.iter().filter(|s| s.is_some()).count(),
+                    CHUNK_SHARDS,
+                    DATA_SHARDS
+                );
+            }
+        }
+
+        // Reset buffer
+        for shard in self.current_chunk.iter_mut() {
+            *shard = None;
+        }
+    }
 }
 
-pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Error>> {
-    let mut last_chunk_id: i32 = -1;
-    let mut chunk: [Option<Vec<u8>>; CHUNK_SHARDS] = Default::default();
+// ============================================================================
+// 2. ZERO-COPY PACKET PARSER STRUCT
+// ============================================================================
 
-    let mut buf = [0u8; 2048];
+pub struct VtxPacket<'a> {
+    pub src_mac: &'a [u8; 6],
+    pub command_id: u8,
+    pub payload: &'a [u8],
+}
 
-    loop {
-        // Read incoming frame from raw socket
-        let bytes_received = unsafe {
-            libc::recv(
-                socket_fd,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-                0,
-            )
-        };
-
-        if bytes_received < 0 {
-            eprintln!("Error reading frame: {}", Error::last_os_error());
-            continue;
+impl<'a> VtxPacket<'a> {
+    pub fn parse(packet: &'a [u8], filter_mac: &[u8; 6]) -> Option<Self> {
+        if packet.len() < 4 {
+            return None;
         }
 
-        let packet = &buf[..bytes_received as usize];
-
-        // --- Basic 802.11 Frame Parsing ---
-        // 1. Radiotap header length is stored at byte offset 2 (u16 little endian)
         let radiotap_len = u16::from_le_bytes([packet[2], packet[3]]) as usize;
+        let min_len = radiotap_len + 24 + 4; // Radiotap + 802.11 Header (24) + VTX Header (4)
 
-        if packet.len() < radiotap_len + 24 {
-            continue;
+        if packet.len() < min_len {
+            return None;
         }
 
-        // 2. The 802.11 header starts right after the Radiotap header
         let dot11_header = &packet[radiotap_len..];
 
-        // Frame Control bytes
+        // Filter Source MAC
+        let src_mac: &[u8; 6] = dot11_header[10..16].try_into().ok()?;
+        if src_mac != filter_mac {
+            return None;
+        }
+
+        // Filter Frame Type (Management Action Frame: Type 0, Subtype 13)
         let frame_control = u16::from_le_bytes([dot11_header[0], dot11_header[1]]);
-
-        let frame_type = (frame_control >> 2) & 0x3; // Bit 2-3
-        let frame_subtype = (frame_control >> 4) & 0xF; // Bit 4-7
-
-        // Extract Destination and Source MAC Addresses
-        let _dst_mac = &dot11_header[4..10];
-        let src_mac = &dot11_header[10..16];
-        let _bssid_mac = &dot11_header[16..22];
-
-        // Extract Sequence Control (Bits 4-15 = Sequence Number)
-        let seq_ctrl = u16::from_le_bytes([dot11_header[22], dot11_header[23]]);
-        let seq_num = seq_ctrl >> 4;
-
-        if src_mac != [0x00, 0x11, 0x22, 0x33, 0x44, 0x55] {
-            continue; // Ignore frames from other sources
+        let frame_type = (frame_control >> 2) & 0x3;
+        let frame_subtype = (frame_control >> 4) & 0xF;
+        if frame_type != 0 || frame_subtype != 13 {
+            return None;
         }
 
         let payload = &dot11_header[24..];
+        let command_id = payload[0];
 
-        // Print parsed frame summary
-        log::debug!(
-            "[{} bytes] Type: {} Subtype: {:2} | Src: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} | Seq: {}",
-            bytes_received,
-            match frame_type {
-                0 => "Management",
-                1 => "Control",
-                2 => "Data",
-                _ => "Unknown",
-            },
-            frame_subtype,
-            src_mac[0],
-            src_mac[1],
-            src_mac[2],
-            src_mac[3],
-            src_mac[4],
-            src_mac[5],
-            seq_num
-        );
+        Some(Self {
+            src_mac,
+            command_id,
+            payload,
+        })
+    }
+}
 
-        let frame_id = payload[0] as u32;
-        let chunk_id = payload[1] as usize;
-        let shard_id = payload[2] as usize;
+// ============================================================================
+// 3. RECEIVER WORKER & NETWORK LOOP
+// ============================================================================
 
-        log::debug!(
-            "Frame ID: {}, Chunk ID: {}, Shard ID: {}",
-            frame_id,
-            chunk_id,
-            shard_id
-        );
+pub struct VideoReceiver {
+    socket_fd: i32,
+    target_mac: [u8; 6],
+}
 
-        if chunk_id != last_chunk_id as usize {
-            if last_chunk_id != -1 {
-                // New chunk received
-                let result = decode_chunk(&mut chunk);
+impl VideoReceiver {
+    pub fn new(socket_fd: i32, target_mac: [u8; 6]) -> Self {
+        Self {
+            socket_fd,
+            target_mac,
+        }
+    }
 
-                if let Err(e) = result {
-                    log::error!("Error decoding chunk: {}", e);
-                    log::info!(
-                        "Chunk has {} shards, expected {} (minimum {})",
-                        chunk.iter().filter(|s| s.is_some()).count(),
-                        CHUNK_SHARDS,
-                        DATA_SHARDS
-                    );
-                }
+    pub fn start(self) -> Result<(), Box<dyn std::error::Error>> {
+        let (tx, rx) = channel::<Vec<u8>>();
+        let target_mac = self.target_mac;
 
-                // Reset the chunk vector
-                for shard in chunk.iter_mut() {
-                    *shard = None;
+        // Worker processing thread
+        let worker_handle: JoinHandle<()> = thread::spawn(move || {
+            let mut assembler = ChunkAssembler::new();
+
+            while let Ok(packet) = rx.recv() {
+                if let Some(vtx_packet) = VtxPacket::parse(&packet, &target_mac) {
+                    match vtx_packet.command_id {
+                        0x01 => log::debug!("Received config frame"),
+                        0x02 => assembler.process_shard(vtx_packet.payload),
+                        _ => log::debug!("Ignoring Command ID: 0x{:02X}", vtx_packet.command_id),
+                    }
                 }
             }
+        });
 
-            last_chunk_id = chunk_id as i32;
-        } else {
-            chunk[shard_id] = Some(payload[3..(payload.len() - 4)].to_vec());
+        // Main Socket I/O Loop
+        let mut buf = [0u8; 2048];
+        loop {
+            let bytes_received = unsafe {
+                libc::recv(
+                    self.socket_fd,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                    0,
+                )
+            };
+
+            if bytes_received < 0 {
+                eprintln!("Error reading frame: {}", Error::last_os_error());
+                continue;
+            }
+
+            if tx.send(buf[..bytes_received as usize].to_vec()).is_err() {
+                log::error!("Worker thread terminated. Exiting RX loop.");
+                break;
+            }
         }
+
+        let _ = worker_handle.join();
+        Ok(())
+    }
+}
+
+// ============================================================================
+// 4. TRANSMITTER STRUCT
+// ============================================================================
+
+pub struct VideoTransmitter<'a> {
+    socket_fd: i32,
+    stream: Stream<'a>,
+    frame_counter: u32,
+}
+
+impl<'a> VideoTransmitter<'a> {
+    pub fn connect(dev_index: usize, socket_fd: i32) -> Result<Self, Box<dyn std::error::Error>> {
+        let dev = Device::new(dev_index)?;
+
+        let mut fmt = dev.format()?;
+        fmt.width = 640;
+        fmt.height = 480;
+        fmt.fourcc = FourCC::new(b"MJPG");
+
+        let set_fmt = dev.set_format(&fmt)?;
+        log::info!(
+            "[*] Camera initialized: {}x{} ({})",
+            set_fmt.width,
+            set_fmt.height,
+            set_fmt.fourcc
+        );
+
+        let stream = Stream::with_buffers(&dev, Type::VideoCapture, 4)?;
+
+        Ok(Self {
+            socket_fd,
+            stream,
+            frame_counter: 0,
+        })
+    }
+
+    pub fn transmit_next_frame(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let (buf, _meta) = self.stream.next()?;
+        log::debug!(
+            "[+] Captured Frame #{}: {} bytes",
+            self.frame_counter,
+            buf.len()
+        );
+
+        let encoded_chunks = process_frame_into_chunks(self.frame_counter, &buf)?;
+
+        for chunk in encoded_chunks {
+            for shard in chunk {
+                send_frame(self.socket_fd, shard)?;
+                thread::sleep(std::time::Duration::from_micros(50));
+            }
+        }
+
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+        Ok(())
     }
 }

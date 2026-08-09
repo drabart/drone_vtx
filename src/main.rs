@@ -4,10 +4,9 @@ mod network_send;
 mod video_process;
 
 use crate::network_send::{close_socket, open_socket};
-use crate::video_process::{receive_video_stream, transmit_video_stream};
+use crate::video_process::{VideoReceiver, VideoTransmitter};
 
 use clap::{Parser, ValueEnum};
-
 use env_logger::{Builder, Env};
 
 #[derive(Parser, Debug)]
@@ -54,16 +53,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_transmitter(interface: &str) -> Result<(), Box<dyn std::error::Error>> {
     let socket_fd = open_socket(interface)?;
-    transmit_video_stream(socket_fd)?;
-    close_socket(socket_fd);
 
-    Ok(())
+    // Initialize the struct (camera index 0)
+    let mut transmitter = VideoTransmitter::connect(0, socket_fd)?;
+
+    log::info!("[*] Starting transmitter loop...");
+    loop {
+        transmitter.transmit_next_frame()?;
+    }
+
+    // Cleanup (unreachable loop, but good practice if broken out)
+    #[allow(unreachable_code)]
+    {
+        close_socket(socket_fd);
+        Ok(())
+    }
 }
 
 fn run_receiver(interface: &str) -> Result<(), Box<dyn std::error::Error>> {
     let socket_fd = open_socket(interface)?;
-    receive_video_stream(socket_fd)?;
-    close_socket(socket_fd);
 
+    // Target MAC address to filter
+    let target_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+    let receiver = VideoReceiver::new(socket_fd, target_mac);
+
+    log::info!("[*] Starting receiver loop...");
+    receiver.start()?;
+
+    close_socket(socket_fd);
     Ok(())
 }

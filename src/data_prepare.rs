@@ -2,7 +2,7 @@ use crate::config::*;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 const MAX_PACKET_PAYLOAD_SIZE: usize = 1480; // Maximum payload size
-const PACKET_PAYLOAD_SIZE: usize = MAX_PACKET_PAYLOAD_SIZE - 3;
+const PACKET_PAYLOAD_SIZE: usize = 512;
 
 pub fn process_frame_into_chunks(
     frame_id: u32,
@@ -18,6 +18,7 @@ pub fn process_frame_into_chunks(
             .enumerate()
             .map(|(shard_id, shard)| {
                 let mut packet = Vec::with_capacity(3 + shard.len());
+                packet.push(0x02);
                 packet.push((frame_id % 256) as u8);
                 packet.push(chunk_id as u8);
                 packet.push(shard_id as u8);

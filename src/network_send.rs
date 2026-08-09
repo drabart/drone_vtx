@@ -84,7 +84,7 @@ pub fn send_frame(socket_fd: i32, frame_bytes: Vec<u8>) -> Result<(), Box<dyn st
         )
     };
 
-    println!("[+] Sent Frame: Size = {} bytes", data_frame.len());
+    log::debug!("[+] Sent Frame: Size = {} bytes", data_frame.len());
 
     if sent_bytes < 0 {
         return Err("Error sending frame".into());
