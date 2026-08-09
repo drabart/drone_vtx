@@ -102,6 +102,10 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
         let seq_ctrl = u16::from_le_bytes([dot11_header[22], dot11_header[23]]);
         let seq_num = seq_ctrl >> 4;
 
+        if src_mac != [0x00, 0x11, 0x22, 0x33, 0x44, 0x55] {
+            continue; // Ignore frames from other sources
+        }
+
         // Print parsed frame summary
         println!(
             "[{} bytes] Type: {} Subtype: {:2} | Src: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} | Seq: {}",
