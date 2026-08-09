@@ -46,7 +46,7 @@ pub fn send_frame(
     shard_id: u16,
     frame_bytes: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let data_frame = build_data_frame(shard_id, &frame_bytes);
+    let data_frame = build_action_frame(shard_id, &frame_bytes);
 
     let sent_bytes = unsafe {
         libc::send(
@@ -57,6 +57,12 @@ pub fn send_frame(
         )
     };
 
+    println!(
+        "[+] Sent Frame: Shard ID = {}, Size = {} bytes",
+        shard_id,
+        data_frame.len()
+    );
+
     if sent_bytes < 0 {
         return Err("Error sending frame".into());
     }
@@ -64,36 +70,28 @@ pub fn send_frame(
     Ok(())
 }
 
-/// Constructs an 802.11 Data Frame pushing up to ~1400 bytes of raw FEC payload
-pub fn build_data_frame(seq_num: u16, payload: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(32 + payload.len());
+pub fn build_action_frame(seq_num: u16, payload: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(35 + payload.len());
 
-    // --- 1. RADIOTAP HEADER (8 Bytes) ---
-    buf.extend_from_slice(&[
-        0x00, 0x00, // Header revision & pad
-        0x08, 0x00, // Header length: 8 bytes
-        0x00, 0x00, 0x00, 0x00, // Present flags
-    ]);
+    // 1. Radiotap Header (8 Bytes)
+    buf.extend_from_slice(&[0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-    // --- 2. 802.11 DATA FRAME HEADER (24 Bytes) ---
-    // Frame Control: Data Frame (Subtype 0x00, Type 0x02 => 0x0008, Little Endian: [0x08, 0x00])
-    // Flags: ToDS = 0, FromDS = 0 (Ad-hoc / Direct Injection)
-    buf.extend_from_slice(&[0x08, 0x00]);
-    // Duration
-    buf.extend_from_slice(&[0x00, 0x00]);
-    // Destination Addr (MAC): Broadcast (ff:ff:ff:ff:ff:ff) or Receiver MAC
-    buf.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
-    // Source Addr (MAC): 00:11:22:33:44:55
-    buf.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-    // BSSID: Broadcast
-    buf.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    // 2. 802.11 Action Frame Header (24 Bytes)
+    // Frame Control: Subtype Action (0xD0 -> Little Endian [0xd0, 0x00])
+    buf.extend_from_slice(&[0xd0, 0x00]);
+    buf.extend_from_slice(&[0x00, 0x00]); // Duration
+    buf.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // Dest MAC
+    buf.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]); // Src MAC
+    buf.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // BSSID
 
-    // Sequence Control (Fragment 0, Sequence Number)
     let sequence_control = (seq_num % 4096) << 4;
     buf.extend_from_slice(&sequence_control.to_le_bytes());
 
-    // --- 3. CONTIGUOUS PAYLOAD (No IEs, No Tags!) ---
-    // Push the entire payload buffer straight into the packet
+    // 3. Action Frame Payload Header (3 Bytes)
+    buf.push(127); // Category: Vendor-specific / Experimental (127)
+    buf.extend_from_slice(&[0x00, 0x00, 0x00]); // OUI / ID
+
+    // 4. Raw Contiguous Payload (Up to ~1400 bytes)
     buf.extend_from_slice(payload);
 
     buf
