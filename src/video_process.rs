@@ -1,4 +1,4 @@
-use crate::data_prepare::process_data_into_chunks;
+use crate::data_prepare::process_frame_into_chunks;
 use crate::network_send::send_frame;
 use std::io::Error;
 use v4l::{
@@ -41,11 +41,11 @@ fn transmit_video_frame(
     let (buf, _meta) = stream.next()?;
     println!("[+] Captured Frame: Size = {} bytes", buf.len());
 
-    let encoded_chunks = process_data_into_chunks(buf)?;
+    let encoded_chunks = process_frame_into_chunks(0, &buf)?; // Replace 0 with actual frame ID if available
 
     for chunk in encoded_chunks {
-        for (i, shard) in chunk.iter().enumerate() {
-            send_frame(socket_fd, i as u16, shard.clone())?;
+        for shard in chunk {
+            send_frame(socket_fd, shard)?;
         }
     }
 
@@ -53,6 +53,8 @@ fn transmit_video_frame(
 }
 
 pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Error>> {
+    let frames: Vec<Vec<Vec<u8>>> = Vec::new();
+
     let mut buf = [0u8; 2048];
 
     loop {
@@ -73,8 +75,7 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
 
         let packet = &buf[..bytes_received as usize];
 
-        // Ensure we received at least a minimal Radiotap Header (8 bytes) + 802.11 Header (24 bytes)
-        if packet.len() < 32 {
+        if packet.len() < 35 {
             continue;
         }
 
@@ -105,6 +106,7 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
         if src_mac != [0x00, 0x11, 0x22, 0x33, 0x44, 0x55] {
             continue; // Ignore frames from other sources
         }
+        let payload = &dot11_header[24..];
 
         // Print parsed frame summary
         println!(
@@ -124,6 +126,11 @@ pub fn receive_video_stream(socket_fd: i32) -> Result<(), Box<dyn std::error::Er
             src_mac[4],
             src_mac[5],
             seq_num
+        );
+
+        println!(
+            "Frame ID: {}, Chunk ID: {}, Shard ID: {}",
+            payload[0], payload[1], payload[2]
         );
     }
 }

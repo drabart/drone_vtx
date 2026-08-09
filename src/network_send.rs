@@ -41,12 +41,8 @@ pub fn close_socket(socket_fd: i32) {
     unsafe { libc::close(socket_fd) };
 }
 
-pub fn send_frame(
-    socket_fd: i32,
-    shard_id: u16,
-    frame_bytes: Vec<u8>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let data_frame = build_action_frame(shard_id, &frame_bytes);
+pub fn send_frame(socket_fd: i32, frame_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    let data_frame = build_action_frame(&frame_bytes);
 
     let sent_bytes = unsafe {
         libc::send(
@@ -57,11 +53,7 @@ pub fn send_frame(
         )
     };
 
-    println!(
-        "[+] Sent Frame: Shard ID = {}, Size = {} bytes",
-        shard_id,
-        data_frame.len()
-    );
+    println!("[+] Sent Frame: Size = {} bytes", data_frame.len());
 
     if sent_bytes < 0 {
         return Err("Error sending frame".into());
@@ -70,7 +62,7 @@ pub fn send_frame(
     Ok(())
 }
 
-pub fn build_action_frame(seq_num: u16, payload: &[u8]) -> Vec<u8> {
+pub fn build_action_frame(payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(35 + payload.len());
 
     // 1. Radiotap Header (8 Bytes)
@@ -83,9 +75,6 @@ pub fn build_action_frame(seq_num: u16, payload: &[u8]) -> Vec<u8> {
     buf.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // Dest MAC
     buf.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]); // Src MAC
     buf.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // BSSID
-
-    let sequence_control = (seq_num % 4096) << 4;
-    buf.extend_from_slice(&sequence_control.to_le_bytes());
 
     // 3. Action Frame Payload Header (3 Bytes)
     buf.push(127); // Category: Vendor-specific / Experimental (127)
