@@ -1,6 +1,7 @@
 use crate::config::*;
 use crate::data_prepare::{decode_chunk, process_frame_into_chunks};
 use crate::network_send::send_frame;
+use radiotap::Radiotap;
 use std::io::{Error, Result as IoResult};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
@@ -20,6 +21,8 @@ pub struct ChunkAssembler {
     last_frame_id: i32,
     last_chunk_id: i32,
     chunks_ok: i32,
+    total_shards_expected: usize,
+    total_shards_received: usize,
     current_chunk: [Option<Vec<u8>>; CHUNK_SHARDS],
 }
 
@@ -29,6 +32,8 @@ impl Default for ChunkAssembler {
             last_frame_id: -1,
             last_chunk_id: -1,
             chunks_ok: 0,
+            total_shards_expected: 0,
+            total_shards_received: 0,
             current_chunk: Default::default(),
         }
     }
@@ -61,19 +66,34 @@ impl ChunkAssembler {
                     self.flush_and_decode_chunk();
                 }
 
+                let frame_loss_pct = if self.total_shards_expected > 0 {
+                    100.0
+                        * (1.0
+                            - (self.total_shards_received as f32
+                                / self.total_shards_expected as f32))
+                } else {
+                    0.0
+                };
+
                 log::info!(
-                    "[*] Frame {} completed. Total chunks decoded: {}/{}",
+                    "[*] Frame {} completed. Chunks decoded: {}/{}. Total Shard Loss: {:.2}% ({}/{} shards)",
                     self.last_frame_id,
                     self.chunks_ok,
                     if self.last_chunk_id >= 0 {
                         self.last_chunk_id + 1
                     } else {
                         0
-                    }
+                    },
+                    frame_loss_pct,
+                    self.total_shards_expected
+                        .saturating_sub(self.total_shards_received),
+                    self.total_shards_expected
                 );
             }
 
             self.chunks_ok = 0;
+            self.total_shards_expected = 0;
+            self.total_shards_received = 0;
             self.last_frame_id = frame_id as i32;
             self.last_chunk_id = -1;
         }
@@ -94,17 +114,34 @@ impl ChunkAssembler {
     }
 
     fn flush_and_decode_chunk(&mut self) {
+        let received_count = self.current_chunk.iter().filter(|s| s.is_some()).count();
+        let missing_count = CHUNK_SHARDS.saturating_sub(received_count);
+        let chunk_loss_pct = 100.0 * (missing_count as f32 / CHUNK_SHARDS as f32);
+
+        // Accumulate overall frame statistics
+        self.total_shards_expected += CHUNK_SHARDS;
+        self.total_shards_received += received_count;
+
         match decode_chunk(&mut self.current_chunk) {
             Ok(_) => {
                 self.chunks_ok += 1;
+                log::debug!(
+                    "Chunk {} decoded OK. Shards: {}/{} (Loss: {:.1}%)",
+                    self.last_chunk_id,
+                    received_count,
+                    CHUNK_SHARDS,
+                    chunk_loss_pct
+                );
             }
             Err(err) => {
-                log::debug!("Error decoding chunk: {:?}", err);
                 log::error!(
-                    "Chunk has {} shards, expected {} (min {})",
-                    self.current_chunk.iter().filter(|s| s.is_some()).count(),
+                    "Failed decoding Chunk {}: {:?}. Received {}/{} shards (min required: {}, Loss: {:.1}%)",
+                    self.last_chunk_id,
+                    err,
+                    received_count,
                     CHUNK_SHARDS,
-                    DATA_SHARDS
+                    DATA_SHARDS,
+                    chunk_loss_pct
                 );
             }
         }
@@ -127,7 +164,7 @@ pub struct VtxPacket<'a> {
 }
 
 impl<'a> VtxPacket<'a> {
-    pub fn parse(packet: &'a [u8], filter_mac: &[u8; 6]) -> Option<Self> {
+    pub fn parse(packet: &'a [u8], filter_mac: &[u8; 6], debug: bool) -> Option<Self> {
         if packet.len() < 4 {
             return None;
         }
@@ -139,6 +176,7 @@ impl<'a> VtxPacket<'a> {
             return None;
         }
 
+        let radiotap_bytes = &packet[..radiotap_len];
         let dot11_header = &packet[radiotap_len..];
 
         // Filter Source MAC
@@ -158,11 +196,52 @@ impl<'a> VtxPacket<'a> {
         let payload = &dot11_header[24..];
         let command_id = payload[0];
 
+        if debug {
+            Self::log_radiotap_debug(radiotap_bytes);
+        }
+
         Some(Self {
             src_mac,
             command_id,
             payload,
         })
+    }
+
+    fn log_radiotap_debug(radiotap_bytes: &[u8]) {
+        match Radiotap::from_bytes(radiotap_bytes) {
+            Ok(rt) => {
+                let rate_str = rt
+                    .rate
+                    .map_or("N/A".to_string(), |r| format!("{:.1} Mbps", r.value));
+
+                let ch_str = rt
+                    .channel
+                    .map_or("N/A".to_string(), |c| format!("{} MHz", c.freq));
+
+                let rssi_str = rt
+                    .antenna_signal
+                    .map_or("N/A".to_string(), |s| format!("{} dBm", s.value));
+
+                log::info!(
+                    "Radiotap Decoded | Rate: {} | Ch: {} | RSSI: {}",
+                    rate_str,
+                    ch_str,
+                    rssi_str
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to parse Radiotap header ({} bytes): {:?}. Raw hex: {}",
+                    radiotap_bytes.len(),
+                    e,
+                    radiotap_bytes
+                        .iter()
+                        .map(|b| format!("{:02X}", b))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+            }
+        }
     }
 }
 
@@ -192,7 +271,7 @@ impl VideoReceiver {
             let mut assembler = ChunkAssembler::new();
 
             while let Ok(packet) = rx.recv() {
-                if let Some(vtx_packet) = VtxPacket::parse(&packet, &target_mac) {
+                if let Some(vtx_packet) = VtxPacket::parse(&packet, &target_mac, false) {
                     match vtx_packet.command_id {
                         0x01 => log::debug!("Received config frame"),
                         0x02 => assembler.process_shard(vtx_packet.payload),
