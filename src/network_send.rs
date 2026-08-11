@@ -9,19 +9,7 @@ pub fn open_socket(interface: &str) -> Result<i32, Box<dyn std::error::Error>> {
         return Err("Failed to create raw socket. Are you running as root/sudo?".into());
     }
 
-    // 2. Bypass Linux Qdisc for direct low-latency injection
-    let bypass: libc::c_int = 1;
-    unsafe {
-        libc::setsockopt(
-            socket_fd,
-            libc::SOL_PACKET,
-            libc::PACKET_QDISC_BYPASS,
-            &bypass as *const _ as *const libc::c_void,
-            std::mem::size_of_val(&bypass) as libc::socklen_t,
-        );
-    }
-
-    // 3. Set Socket Buffers to 4MB to prevent drops during bursts
+    // 2. Set Socket Buffers to 4MB to prevent drops during bursts
     let buf_size: libc::c_int = 4 * 1024 * 1024;
     unsafe {
         libc::setsockopt(
@@ -40,14 +28,14 @@ pub fn open_socket(interface: &str) -> Result<i32, Box<dyn std::error::Error>> {
         );
     }
 
-    // 4. Resolve interface index
+    // 3. Resolve interface index
     let iface_name = CString::new(interface)?;
     let if_index = unsafe { libc::if_nametoindex(iface_name.as_ptr()) };
     if if_index == 0 {
         return Err(format!("Interface {} not found", interface).into());
     }
 
-    // 5. Bind socket
+    // 4. Bind socket
     let mut sa: sockaddr_ll = unsafe { zeroed() };
     sa.sll_family = AF_PACKET as u16;
     sa.sll_protocol = (ETH_P_ALL as u16).to_be();
@@ -75,16 +63,23 @@ pub fn close_socket(socket_fd: i32) {
 pub fn send_frame(socket_fd: i32, frame_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
     let data_frame = build_action_frame(&frame_bytes);
 
+    send_packet_nonblocking(socket_fd, &data_frame)?;
+
+    Ok(())
+}
+
+pub fn send_packet_nonblocking(
+    socket_fd: i32,
+    packet: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
     let sent_bytes = unsafe {
         libc::send(
             socket_fd,
-            data_frame.as_ptr() as *const libc::c_void,
-            data_frame.len(),
+            packet.as_ptr() as *const libc::c_void,
+            packet.len(),
             0,
         )
     };
-
-    log::debug!("[+] Sent Frame: Size = {} bytes", data_frame.len());
 
     if sent_bytes < 0 {
         return Err("Error sending frame".into());

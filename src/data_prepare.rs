@@ -2,7 +2,7 @@ use crate::config::*;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 const MAX_PACKET_PAYLOAD_SIZE: usize = 1480; // Maximum payload size
-const PACKET_PAYLOAD_SIZE: usize = 512;
+const PACKET_PAYLOAD_SIZE: usize = MAX_PACKET_PAYLOAD_SIZE - 2;
 
 pub fn process_frame_into_chunks(
     frame_id: u32,

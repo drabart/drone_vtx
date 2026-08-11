@@ -2,9 +2,10 @@ use crate::config::*;
 use crate::data_prepare::{decode_chunk, process_frame_into_chunks};
 use crate::network_send::send_frame;
 use radiotap::Radiotap;
-use std::io::{Error, Result as IoResult};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::io::Error;
+use std::sync::mpsc::channel;
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 use v4l::{
     buffer::Type,
     device::Device,
@@ -158,7 +159,6 @@ impl ChunkAssembler {
 // ============================================================================
 
 pub struct VtxPacket<'a> {
-    pub src_mac: &'a [u8; 6],
     pub command_id: u8,
     pub payload: &'a [u8],
 }
@@ -201,7 +201,6 @@ impl<'a> VtxPacket<'a> {
         }
 
         Some(Self {
-            src_mac,
             command_id,
             payload,
         })
@@ -347,20 +346,21 @@ impl<'a> VideoTransmitter<'a> {
 
     pub fn transmit_next_frame(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let (buf, _meta) = self.stream.next()?;
-        log::debug!(
-            "[+] Captured Frame #{}: {} bytes",
-            self.frame_counter,
-            buf.len()
-        );
 
+        let start_time = Instant::now();
         let encoded_chunks = process_frame_into_chunks(self.frame_counter, &buf)?;
 
+        // 1. Blast all shards for the entire video frame while accumulating stats in RAM
         for chunk in encoded_chunks {
             for shard in chunk {
                 send_frame(self.socket_fd, shard)?;
-                thread::sleep(std::time::Duration::from_micros(50));
+                thread::sleep(std::time::Duration::from_micros(2400));
             }
         }
+
+        let elapsed = start_time.elapsed();
+
+        log::info!("[Frame #{}] Tx Time: {:.2?}", self.frame_counter, elapsed,);
 
         self.frame_counter = self.frame_counter.wrapping_add(1);
         Ok(())
