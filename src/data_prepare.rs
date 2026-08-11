@@ -61,9 +61,21 @@ pub fn encode_chunk(data: &[u8]) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Err
     Ok(shards)
 }
 
-pub fn decode_chunk(chunk: &mut [Option<Vec<u8>>]) -> Result<(), Box<dyn std::error::Error>> {
-    let r = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
+pub fn decode_chunk(chunk: &mut [Option<Vec<u8>>]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let r = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS)?;
+
+    // Repair missing data and parity shards in place
     r.reconstruct(chunk)?;
 
-    Ok(())
+    // Assemble only the DATA_SHARDS (ignoring PARITY_SHARDS) into one byte stream
+    let mut chunk_bytes = Vec::new();
+    for shard in chunk.iter().take(DATA_SHARDS) {
+        if let Some(data) = shard {
+            chunk_bytes.extend_from_slice(data);
+        } else {
+            return Err("Reconstruction reported success, but a data shard was still None".into());
+        }
+    }
+
+    Ok(chunk_bytes)
 }

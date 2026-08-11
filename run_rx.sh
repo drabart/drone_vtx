@@ -1,4 +1,4 @@
 #!/bin/bash
 
 cargo build --release
-sudo ./target/release/drone-vtx --mode rx --interface wlan0
+sudo -E DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY ./target/release/drone-vtx --mode rx --interface wlan0

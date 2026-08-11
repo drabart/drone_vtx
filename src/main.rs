@@ -1,10 +1,12 @@
 mod config;
 mod data_prepare;
 mod network_send;
-mod video_process;
+mod receiver;
+mod transmitter;
 
 use crate::network_send::{close_socket, open_socket};
-use crate::video_process::{VideoReceiver, VideoTransmitter};
+use crate::receiver::VideoReceiver;
+use crate::transmitter::VideoTransmitter;
 
 use clap::{Parser, ValueEnum};
 use env_logger::{Builder, Env};
