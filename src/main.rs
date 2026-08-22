@@ -60,9 +60,7 @@ fn run_transmitter(interface: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut transmitter = VideoTransmitter::connect(0, socket_fd)?;
 
     log::info!("[*] Starting transmitter loop...");
-    loop {
-        transmitter.transmit_next_frame()?;
-    }
+    transmitter.start()?;
 
     // Cleanup (unreachable loop, but good practice if broken out)
     #[allow(unreachable_code)]
