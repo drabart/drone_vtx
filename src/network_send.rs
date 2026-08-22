@@ -60,6 +60,18 @@ pub fn close_socket(socket_fd: i32) {
     unsafe { libc::close(socket_fd) };
 }
 
+pub fn send_video_frame(
+    socket_fd: i32,
+    encoded_chunks: Vec<Vec<Vec<u8>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for chunk in encoded_chunks {
+        for frame in chunk {
+            send_frame(socket_fd, frame)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn send_frame(socket_fd: i32, frame_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
     let data_frame = build_action_frame(&frame_bytes);
 

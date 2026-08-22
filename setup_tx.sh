@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 sudo ip link set wlan1 down
 sudo iw dev wlan1 set type monitor
