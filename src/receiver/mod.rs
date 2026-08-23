@@ -83,7 +83,7 @@ impl<D: FrameDecoder + Send + 'static> VideoReceiver<D> {
                 };
 
                 if bytes_received < 0 {
-                    eprintln!("Error reading frame: {}", Error::last_os_error());
+                    log::error!("Error reading frame: {}", Error::last_os_error());
                     continue;
                 }
 

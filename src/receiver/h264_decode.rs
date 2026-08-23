@@ -8,14 +8,12 @@ pub struct H264FrameDecoder {
     decoder: Decoder,
     rgb_scratch: Vec<u8>,
     pixel_buffer: Vec<u32>,
-    width: usize,
-    height: usize,
 }
 
 impl H264FrameDecoder {
     pub fn new(width: usize, height: usize) -> Result<Self, Box<dyn Error>> {
         let api = OpenH264API::from_source();
-        let config = DecoderConfig::default();
+        let config = DecoderConfig::new().debug(true);
         let decoder = Decoder::with_api_config(api, config)
             .map_err(|e| format!("Failed to create OpenH264 decoder: {:?}", e))?;
 
@@ -23,8 +21,6 @@ impl H264FrameDecoder {
             decoder,
             rgb_scratch: Vec::new(),
             pixel_buffer: vec![0u32; width * height],
-            width,
-            height,
         })
     }
 }
