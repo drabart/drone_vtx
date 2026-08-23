@@ -1,5 +1,5 @@
 use super::yuv_convert::yuyv_to_yuv420p;
-use crate::config::{HEIGHT, WIDTH};
+use crate::common::config::{HEIGHT, WIDTH};
 use openh264::OpenH264API;
 use openh264::encoder::{
     BitRate, EncodedBitStream, Encoder, EncoderConfig, FrameRate, IntraFramePeriod,
@@ -26,10 +26,10 @@ impl H264Encoder {
         Ok(Self { encoder })
     }
 
-    pub fn encode(
-        &mut self,
+    pub fn encode<'a>(
+        &'a mut self,
         yuyv_bytes: &[u8],
-    ) -> Result<EncodedBitStream, Box<dyn std::error::Error>> {
+    ) -> Result<EncodedBitStream<'a>, Box<dyn std::error::Error>> {
         let (width, height) = (WIDTH, HEIGHT);
         // Buffers for Planar YUV420P
         let y_len = WIDTH * HEIGHT;

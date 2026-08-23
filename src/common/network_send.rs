@@ -1,6 +1,7 @@
 use libc::{AF_PACKET, ETH_P_ALL, SOCK_RAW, bind, sockaddr_ll, socket};
 use std::ffi::CString;
 use std::mem::zeroed;
+use std::thread;
 
 pub fn open_socket(interface: &str) -> Result<i32, Box<dyn std::error::Error>> {
     // 1. Create raw socket
@@ -60,35 +61,31 @@ pub fn close_socket(socket_fd: i32) {
     unsafe { libc::close(socket_fd) };
 }
 
-pub fn send_video_frame(
+pub fn send_packets(
     socket_fd: i32,
-    encoded_chunks: Vec<Vec<Vec<u8>>>,
+    frames: Vec<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for chunk in encoded_chunks {
-        for frame in chunk {
-            send_frame(socket_fd, frame)?;
-        }
+    for frame in frames {
+        send_packet(socket_fd, frame)?;
+        thread::sleep(std::time::Duration::from_micros(1000));
     }
     Ok(())
 }
 
-pub fn send_frame(socket_fd: i32, frame_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
-    let data_frame = build_action_frame(&frame_bytes);
+fn send_packet(socket_fd: i32, payload: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    let network_packet = build_action_frame(&payload);
 
-    send_packet_nonblocking(socket_fd, &data_frame)?;
+    socket_send(socket_fd, &network_packet)?;
 
     Ok(())
 }
 
-pub fn send_packet_nonblocking(
-    socket_fd: i32,
-    packet: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+fn socket_send(socket_fd: i32, network_packet: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let sent_bytes = unsafe {
         libc::send(
             socket_fd,
-            packet.as_ptr() as *const libc::c_void,
-            packet.len(),
+            network_packet.as_ptr() as *const libc::c_void,
+            network_packet.len(),
             0,
         )
     };

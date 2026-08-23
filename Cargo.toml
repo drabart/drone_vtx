@@ -8,6 +8,7 @@ edition = "2024"
 log = { version = "0.4", features = ["std"] }
 env_logger = "0.11"
 clap = { version = "4.6", features = ["derive"] }
+zerocopy = "0.8"
 # Networking
 libc = "0.2"
 radiotap = "1.3"

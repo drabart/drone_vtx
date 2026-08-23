@@ -1,11 +1,11 @@
-mod config;
-mod data_prepare;
-mod network_send;
+mod common;
 mod receiver;
 mod transmitter;
 
-use crate::network_send::{close_socket, open_socket};
+use crate::common::config::{HEIGHT, WIDTH};
+use crate::common::network_send::{close_socket, open_socket};
 use crate::receiver::VideoReceiver;
+use crate::receiver::h264_decode;
 use crate::transmitter::VideoTransmitter;
 
 use clap::{Parser, ValueEnum};
@@ -75,7 +75,9 @@ fn run_receiver(interface: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     // Target MAC address to filter
     let target_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-    let receiver = VideoReceiver::new(socket_fd, target_mac);
+    let frame_decoder =
+        h264_decode::H264FrameDecoder::new(WIDTH, HEIGHT).expect("Failed to create frame decoder");
+    let receiver = VideoReceiver::new(socket_fd, target_mac, frame_decoder);
 
     log::info!("[*] Starting receiver loop...");
     receiver.start()?;

@@ -472,6 +472,7 @@ dependencies = [
  "radiotap",
  "reed-solomon-erasure",
  "v4l",
+ "zerocopy",
 ]
 
 [[package]]

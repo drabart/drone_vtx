@@ -1,9 +1,9 @@
 mod h264_encode;
 mod yuv_convert;
 
-use crate::config::{HEIGHT, WIDTH};
-use crate::data_prepare::process_frame_into_chunks;
-use crate::network_send::send_video_frame;
+use crate::common::config::{HEIGHT, WIDTH};
+use crate::common::data_prepare::DataSharder;
+use crate::common::network_send::send_packets;
 use crate::transmitter::h264_encode::H264Encoder;
 use std::thread;
 use std::time::Instant;
@@ -19,6 +19,7 @@ pub struct VideoTransmitter<'a> {
     socket_fd: i32,
     stream: Stream<'a>,
     encoder: H264Encoder,
+    splitter: DataSharder,
     frame_counter: u32,
 }
 
@@ -42,11 +43,14 @@ impl<'a> VideoTransmitter<'a> {
         let stream = Stream::with_buffers(&dev, Type::VideoCapture, 1)?;
         let encoder = H264Encoder::new()?;
 
+        let splitter = DataSharder::new();
+
         // Return the VideoTransmitter instance
         Ok(Self {
             socket_fd,
             stream,
             encoder,
+            splitter,
             frame_counter: 0,
         })
     }
@@ -55,16 +59,24 @@ impl<'a> VideoTransmitter<'a> {
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
 
         let socket_fd = self.socket_fd;
+        let mut splitter = self.splitter.clone();
 
         let _sender_thread = thread::spawn(move || {
             let mut frame_counter = 0;
             while let Ok(frame) = rx.recv() {
                 log::info!("[*] Received frame");
 
-                let encoded_chunks =
-                    process_frame_into_chunks(frame_counter, &frame).expect("Failed to split");
+                let split_frame = splitter
+                    .process_frame_into_packets(frame_counter, &frame)
+                    .expect("Failed to split");
 
-                send_video_frame(socket_fd, encoded_chunks).expect("Failed to send");
+                let encoded_chunks: Vec<Vec<u8>> = split_frame
+                    .into_iter()
+                    .flatten()
+                    .map(|packet| packet.to_bytes())
+                    .collect();
+
+                send_packets(socket_fd, encoded_chunks).expect("Failed to send");
 
                 frame_counter += 1;
             }
