@@ -176,13 +176,13 @@ impl DataSharder {
         let shard_id = packet.header.shard_id as usize;
         let shard_count = packet.header.shard_count as usize; // Expected total shards for this chunk
 
-        log::info!(
-            "[*] Frame {}: Received shard {} of chunk {} ({} shards expected)",
-            frame_id,
-            shard_id,
-            chunk_id,
-            shard_count
-        );
+        // log::info!(
+        //     "[*] Frame {}: Received shard {} of chunk {} ({} shards expected)",
+        //     frame_id,
+        //     shard_id,
+        //     chunk_id,
+        //     shard_count
+        // );
 
         if shard_id >= shard_count || shard_id >= CHUNK_SHARDS {
             return Err(AssemblerError::InvalidShardId {
@@ -200,7 +200,8 @@ impl DataSharder {
 
         if frame_id != self.previous_frame_id as usize {
             // Shard belongs to a new frame, process the previous frame's chunk buffer if it exists
-            let previous_frame_result: Option<Frame> = self.process_previous_frame()?;
+            let previous_frame_result: Result<Option<Frame>, AssemblerError> =
+                self.process_previous_frame();
 
             self.chunks_ok = 0;
             self.total_shards_expected = 0;
@@ -211,13 +212,18 @@ impl DataSharder {
 
             self.previous_chunk_id = chunk_id as i32;
             self.chunk_buffer = Default::default();
-            return Ok(previous_frame_result);
+            return previous_frame_result;
         } else if chunk_id != self.previous_chunk_id as usize {
             // Shard belongs to a new chunk within the same frame, process the previous chunk's buffer if it exists
-            self.process_chunk_buffer()?;
+            let previous_chunk_result: Result<(), AssemblerError> = self.process_chunk_buffer();
 
             self.previous_chunk_id = chunk_id as i32;
             self.chunk_buffer = Default::default();
+
+            if let Err(err) = previous_chunk_result {
+                return Err(err);
+            }
+
             return Ok(None);
         }
 

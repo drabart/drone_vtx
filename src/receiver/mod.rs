@@ -37,21 +37,22 @@ impl<D: FrameDecoder + Send + 'static> VideoReceiver<D> {
         // Worker thread: parses packets, reconstructs raw chunks, and decodes to RGB pixels
         let worker_handle: JoinHandle<()> = thread::spawn(move || {
             let mut sharder = DataSharder::new();
+            let mut vtx_packet_counter = 0u64;
+            let mut non_vtx_packet_counter = 0u64;
 
             while let Ok(packet) = packet_rx.recv() {
                 if let Some(vtx_packet) = VtxPacket::parse(&packet, &target_mac, false) {
                     match vtx_packet.command_id {
                         0x01 => log::debug!("Received config frame"),
                         0x02 => {
-                            // process_shard returns reconstructed raw chunk bytes upon completion
+                            // process_shard returns reconstructed raw frame bytes upon completion
                             match sharder.process_shard(vtx_packet.payload) {
-                                Ok(Some(raw_chunk_bytes)) => {
+                                Ok(Some(raw_frame_bytes)) => {
                                     // Strategy decodes raw bytes directly to pixel buffer
-                                    match decoder.decode_frame(&raw_chunk_bytes) {
-                                        Ok(Some(pixel_buffer)) => {
+                                    match decoder.decode_frame(&raw_frame_bytes) {
+                                        Ok(pixel_buffer) => {
                                             let _ = frame_tx.send(pixel_buffer);
                                         }
-                                        Ok(None) => {}
                                         Err(err) => {
                                             log::error!("Decoder strategy error: {}", err);
                                             decoder.reset();
@@ -64,6 +65,21 @@ impl<D: FrameDecoder + Send + 'static> VideoReceiver<D> {
                         }
                         _ => log::debug!("Ignoring Command ID: 0x{:02X}", vtx_packet.command_id),
                     }
+                    vtx_packet_counter += 1;
+                } else {
+                    non_vtx_packet_counter += 1;
+                }
+
+                if vtx_packet_counter % 100 == 0 {
+                    log::info!(
+                        "Processed {} VTX packets, ignored {} non-VTX packets ({}% ignored)",
+                        vtx_packet_counter,
+                        non_vtx_packet_counter,
+                        (non_vtx_packet_counter as f64
+                            / (vtx_packet_counter + non_vtx_packet_counter) as f64
+                            * 100.0)
+                            .round() as u64
+                    );
                 }
             }
         });

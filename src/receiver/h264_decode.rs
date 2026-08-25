@@ -26,7 +26,7 @@ impl H264FrameDecoder {
 }
 
 impl FrameDecoder for H264FrameDecoder {
-    fn decode_frame(&mut self, payload: &[u8]) -> Result<Option<Vec<u32>>, Box<dyn Error>> {
+    fn decode_frame(&mut self, payload: &[u8]) -> Result<Vec<u32>, Box<dyn Error>> {
         match self.decoder.decode(payload) {
             Ok(Some(yuv)) => {
                 // Resize scratch buffer to hold raw 24-bit RGB8 (R, G, B per pixel)
@@ -50,12 +50,12 @@ impl FrameDecoder for H264FrameDecoder {
                     *pixel = (r << 16) | (g << 8) | b;
                 }
 
-                Ok(Some(self.pixel_buffer.clone())) //[cite: 1]
+                Ok(self.pixel_buffer.clone())
             }
-            Ok(None) => Ok(None), //[cite: 1]
+            Ok(None) => Err("No frame decoded".into()),
             Err(e) => {
-                log::error!("H.264 decode error: {:?}", e); //[cite: 1]
-                Err(format!("H.264 decode error: {:?}", e).into()) //[cite: 1]
+                log::error!("H.264 decode error: {:?}", e);
+                Err(format!("H.264 decode error: {:?}", e).into())
             }
         }
     }
